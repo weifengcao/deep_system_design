@@ -81,8 +81,8 @@ sequenceDiagram
     client->>server: GET /stream (Accept: text/event-stream)
     server-->>client: 200 OK (Connection established)
     Note over client,server: Persistent Unidirectional HTTP/2 Connection
-    server->>client: data: {"msg": "New notification!"}
-    server->>client: data: {"msg": "Another update!"}
+    server->>client: "data: {'msg': 'New notification!'}"
+    server->>client: "data: {'msg': 'Another update!'}"
 ```
 
 *   **Trade-offs:**
@@ -127,7 +127,7 @@ sequenceDiagram
     clientB->>signaling_server: Send SDP Answer
     signaling_server->>clientA: Forward SDP Answer
     Note over clientA,clientB: P2P UDP Connection Established
-    clientA<->>clientB: Direct media/data streaming
+    clientA->>clientB: "Direct media/data streaming (Bidirectional)"
 ```
 
 *   **Trade-offs:**
@@ -167,7 +167,7 @@ flowchart TD
     Broker -->|Broadcast| G2[Gateway Server 2]
     
     G1 -.->|No active connection| C1[Client A]
-    G2 ===>|Active TCP Connection| C2[Client B]
+    G2 ==>|Active TCP Connection| C2[Client B]
     
     style G2 stroke:#299a8d,stroke-width:3px
     style C2 stroke:#299a8d,stroke-width:3px

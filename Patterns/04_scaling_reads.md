@@ -26,17 +26,17 @@ Caching places a high-speed memory layer (e.g., Redis or Memcached) in front of 
 ```mermaid
 sequenceDiagram
     autonumber
-    client->>API: GET /product/123
-    API->>Cache: GET product:123
+    client->>API: "GET /product/123"
+    API->>Cache: "GET product:123"
     alt Cache Hit
-        Cache-->>API: Return cached product JSON
+        Cache-->>API: "Return cached product JSON"
     else Cache Miss
-        Cache-->>API: Null
-        API->>DB: SELECT * FROM products WHERE id = 123;
-        DB-->>API: Return product row
-        API->>Cache: SETEX product:123 (TTL 3600s)
+        Cache-->>API: "Null"
+        API->>DB: "SELECT * FROM products WHERE id = 123"
+        DB-->>API: "Return product row"
+        API->>Cache: "SETEX product:123 (TTL 3600s)"
     end
-    API-->>client: Return product JSON
+    API-->>client: "Return product JSON"
 ```
 
 *   **Cache Invalidation Patterns:**

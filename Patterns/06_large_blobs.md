@@ -23,15 +23,19 @@ To prevent your API gateway and application servers from becoming network bandwi
 ```mermaid
 sequenceDiagram
     autonumber
-    client->>API Server: POST /upload-request (file_name, file_size)
-    Note over API Server: Validate user permissions & size limits
-    API Server->>Object Storage: Request Pre-signed Upload URL (S3 PUT)
-    Object Storage-->>API Server: Return Pre-signed URL (Valid for 15 mins)
-    API Server-->>client: 200 OK (Pre-signed Upload URL + File ID)
-    client->>Object Storage: PUT /video.mp4 (Direct Binary Stream to S3)
-    Object Storage-->>client: 201 Created (Upload complete)
-    client->>API Server: POST /upload-complete (File ID)
-    Note over API Server: Mark upload as completed in Metadata DB
+    actor Client as Client
+    participant API as API Server
+    participant Storage as Object Storage
+
+    Client->>API: "POST /upload-request (file_name, file_size)"
+    Note over API: Validate user permissions & size limits
+    API->>Storage: "Request Pre-signed Upload URL (S3 PUT)"
+    Storage-->>API: "Return Pre-signed URL (Valid for 15 mins)"
+    API-->>Client: "200 OK (Pre-signed Upload URL + File ID)"
+    Client->>Storage: "PUT /video.mp4 (Direct Binary Stream to S3)"
+    Storage-->>Client: "201 Created (Upload complete)"
+    Client->>API: "POST /upload-complete (File ID)"
+    Note over API: Mark upload as completed in Metadata DB
 ```
 
 *   **Trade-offs:**

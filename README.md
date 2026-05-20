@@ -25,16 +25,16 @@ graph TD
     B -->|Complex/Long Workflows| E[Asynchronous Execution]
     B -->|Concurrency Conflicts| F[Distributed Contention]
     
-    C -->|Heavy Reads/Queries| G[04: Scaling Reads]
-    C -->|Heavy Ingestion/Writes| H[05: Scaling Writes]
-    C -->|Huge Media/Files| I[06: Large Blobs]
+    C -->|Heavy Reads/Queries| G["04: Scaling Reads"]
+    C -->|Heavy Ingestion/Writes| H["05: Scaling Writes"]
+    C -->|Huge Media/Files| I["06: Large Blobs"]
     
-    D -->|Push Data to Clients| J[01: Real-time Updates]
+    D -->|Push Data to Clients| J["01: Real-time Updates"]
     
-    E -->|Durability/Orchestration| K[03: Multi-Step Processes]
-    E -->|Heavy/Deferred Compute| L[07: Long-Running Tasks]
+    E -->|Durability/Orchestration| K["03: Multi-Step Processes"]
+    E -->|Heavy/Deferred Compute| L["07: Long-Running Tasks"]
     
-    F -->|Race Conditions/Locks| M[02: Dealing with Contention]
+    F -->|Race Conditions/Locks| M["02: Dealing with Contention"]
     
     style G fill:#f9f,stroke:#333,stroke-width:2px
     style H fill:#f9f,stroke:#333,stroke-width:2px

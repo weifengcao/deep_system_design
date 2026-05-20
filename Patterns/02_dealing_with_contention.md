@@ -34,15 +34,15 @@ sequenceDiagram
     actor U2 as User B
     participant DB as Postgres DB
 
-    U1->>DB: BEGIN; SELECT tickets FROM events WHERE id=1 FOR UPDATE;
+    U1->>DB: "BEGIN - SELECT tickets FROM events WHERE id=1 FOR UPDATE"
     Note over DB: Lock acquired by User A
-    U2->>DB: BEGIN; SELECT tickets FROM events WHERE id=1 FOR UPDATE;
+    U2->>DB: "BEGIN - SELECT tickets FROM events WHERE id=1 FOR UPDATE"
     Note over DB: User B blocked! Waiting...
-    U1->>DB: UPDATE events SET tickets = tickets - 1 WHERE id=1;
-    U1->>DB: COMMIT;
+    U1->>DB: "UPDATE events SET tickets = tickets - 1 WHERE id=1"
+    U1->>DB: "COMMIT"
     Note over DB: User A lock released
-    DB-->>U2: Query resumes, returns updated tickets
-    U2->>DB: ROLLBACK (No tickets left!);
+    DB-->>U2: "Query resumes, returns updated tickets"
+    U2->>DB: "ROLLBACK (No tickets left!)"
 ```
 
 *   **Implementation Syntax (SQL):**
@@ -71,12 +71,12 @@ sequenceDiagram
     actor U2 as User B
     participant DB as Database
 
-    U1->>DB: Read event (tickets=10, version=1)
-    U2->>DB: Read event (tickets=10, version=1)
-    U1->>DB: UPDATE event SET tickets=9, version=2 WHERE id=1 AND version=1;
-    DB-->>U1: 1 Row Affected (Success!)
-    U2->>DB: UPDATE event SET tickets=9, version=2 WHERE id=1 AND version=1;
-    DB-->>U2: 0 Rows Affected (Conflict Detected!)
+    U1->>DB: "Read event (tickets=10, version=1)"
+    U2->>DB: "Read event (tickets=10, version=1)"
+    U1->>DB: "UPDATE event SET tickets=9, version=2 WHERE id=1 AND version=1"
+    DB-->>U1: "1 Row Affected (Success!)"
+    U2->>DB: "UPDATE event SET tickets=9, version=2 WHERE id=1 AND version=1"
+    DB-->>U2: "0 Rows Affected (Conflict Detected!)"
     Note over U2: User B rolls back and retries
 ```
 
@@ -103,15 +103,17 @@ Offload the coordination to a fast, single-threaded, in-memory store like Redis.
 ```mermaid
 sequenceDiagram
     autonumber
+    actor User as Client
     actor App as API Worker
     participant Redis as Redis Cache
     participant DB as Postgres DB
 
-    App->>Redis: EVALSHA "Lua Script (Check & Decrement)"
+    User->>App: "Request Purchase"
+    App->>Redis: "EVALSHA 'Lua Script (Check & Decrement)'"
     Note over Redis: Single-threaded sequence
-    Redis-->>App: Return 1 (Success!)
-    App->>DB: Async write update to persist balance
-    App-->>User: Return 200 OK (Purchased)
+    Redis-->>App: "Return 1 (Success!)"
+    App->>DB: "Async write update to persist balance"
+    App-->>User: "Return 200 OK (Purchased)"
 ```
 
 *   **Lua Script Example (Redis):**

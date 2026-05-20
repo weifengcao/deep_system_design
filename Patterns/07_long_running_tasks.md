@@ -13,15 +13,21 @@ When an API receives a request for a heavy operation, it immediately returns an 
 ```mermaid
 sequenceDiagram
     autonumber
-    client->>API Server: POST /generate-report (payload)
-    Note over API Server: Validate request & generate Task ID
-    API Server->>Database: Insert Task Record (status=PENDING)
-    API Server->>Task Queue: Enqueue Job Task (Task ID, payload)
-    API Server-->>client: 202 Accepted (Task ID: job_999)
-    Note over Task Queue,Worker: Asynchronous Execution Path
-    Worker->>Task Queue: Poll Job Task (job_999)
-    Worker->>Worker: Run heavy computation (PDF generation)...
-    Worker->>Database: Update Task Record (status=COMPLETED, result_url)
+    actor Client as Client
+    participant API as API Server
+    participant DB as Database
+    participant Queue as Task Queue
+    participant Worker as Background Worker
+
+    Client->>API: "POST /generate-report (payload)"
+    Note over API: Validate request & generate Task ID
+    API->>DB: "Insert Task Record (status=PENDING)"
+    API->>Queue: "Enqueue Job Task (Task ID, payload)"
+    API-->>Client: "202 Accepted (Task ID: job_999)"
+    Note over Queue,Worker: Asynchronous Execution Path
+    Worker->>Queue: "Poll Job Task (job_999)"
+    Worker->>Worker: "Run heavy computation (PDF generation)..."
+    Worker->>DB: "Update Task Record (status=COMPLETED, result_url)"
 ```
 
 ---

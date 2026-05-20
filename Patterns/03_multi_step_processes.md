@@ -46,15 +46,15 @@ sequenceDiagram
     participant Pay as Payment Service
     participant Inv as Inventory Service
 
-    Client->>Orch: Start Order
-    Orch->>Pay: Charge Card
-    Pay-->>Orch: Success (Charged $100)
-    Orch->>Inv: Reserve Stock (Failed!)
-    Inv-->>Orch: Out of Stock!
+    Client->>Orch: "Start Order"
+    Orch->>Pay: "Charge Card"
+    Pay-->>Orch: "Success (Charged $100)"
+    Orch->>Inv: "Reserve Stock (Failed!)"
+    Inv-->>Orch: "Out of Stock!"
     Note over Orch: Trigger Compensating Transactions
-    Orch->>Pay: Refund Card ($100)
-    Pay-->>Orch: Success (Refunded)
-    Orch-->>Client: Return Failure (Out of stock)
+    Orch->>Pay: "Refund Card ($100)"
+    Pay-->>Orch: "Success (Refunded)"
+    Orch-->>Client: "Return Failure (Out of stock)"
 ```
 
 *   **Trade-offs:**
@@ -73,10 +73,10 @@ sequenceDiagram
     participant Queue as Event Broker
     participant Inv as Inventory Service
 
-    Pay->>Pay: Charge Card
-    Pay->>Queue: Publish Event: CardCharged
-    Queue->>Inv: Consume Event: CardCharged
-    Inv->>Inv: Reserve Stock
+    Pay->>Pay: "Charge Card"
+    Pay->>Queue: "Publish Event: CardCharged"
+    Queue->>Inv: "Consume Event: CardCharged"
+    Inv->>Inv: "Reserve Stock"
     Note over Inv: Success! Emit Event: StockReserved
 ```
 
@@ -93,10 +93,10 @@ These systems use event sourcing histories to record the execution state of your
 
 ```mermaid
 flowchart TD
-    Start[Start Workflow] --> Step1[Step 1: Charge Card]
+    Start[Start Workflow] --> Step1["Step 1: Charge Card"]
     Step1 -->|State Persisted to Journal| Crash{Host Crashes?}
-    Crash -->|Yes| Recovery[Engine Restores Call Stack on Server 2]
-    Recovery --> Step2[Step 2: Reserve Inventory]
+    Crash -->|Yes| Recovery["Engine Restores Call Stack on Server 2"]
+    Recovery --> Step2["Step 2: Reserve Inventory"]
     Crash -->|No| Step2
     Step2 --> End[Complete Workflow]
 ```
@@ -118,13 +118,13 @@ In distributed networks, "at-least-once" delivery guarantees mean duplicate requ
 ```mermaid
 sequenceDiagram
     autonumber
-    client->>server: POST /payments (Idempotency-Key: pay_abc123)
+    client->>server: "POST /payments (Idempotency-Key: pay_abc123)"
     Note over server: Key not found. Execute charge, save to DB.
-    server-->>client: 200 OK (Charged)
+    server-->>client: "200 OK (Charged)"
     Note over client: Network packet lost! Retry request.
-    client->>server: POST /payments (Idempotency-Key: pay_abc123)
+    client->>server: "POST /payments (Idempotency-Key: pay_abc123)"
     Note over server: Key found in DB! Skip execution.
-    server-->>client: 200 OK (Return cached response)
+    server-->>client: "200 OK (Return cached response)"
 ```
 
 *   **Implementation Mechanics:**
