@@ -43,6 +43,13 @@ sequenceDiagram
     1.  **Cache-Aside (Lazy Loading):** Application queries cache first. On miss, it queries DB, populates cache, and returns (as shown above). *Highly efficient for sparse access, but first-time reads have higher latency.*
     2.  **Write-Through:** Application writes to cache and DB simultaneously. *Guarantees fresh data, but increases write latency.*
     3.  **Write-Behind (Write-Back):** Application writes to cache immediately, and cache asynchronously flushes writes to DB. *Extreme write throughput, but risks data loss on cache crash.*
+    4.  **Read-Through:** The cache itself is responsible for fetching data from the DB on a miss (the application only ever talks to the cache). *Simplifies application code and centralizes cache-population logic, but couples the cache layer to the data source and makes cache configuration more complex.*
+
+*   **Cache Warming Strategies:**
+    On cold starts, new deployments, or after a full cache flush, the cache is empty and all requests become cache misses — effectively a self-inflicted **cache stampede**. To mitigate this:
+    1.  **Background Warmer Job:** Run an async job at startup that queries the DB for the top-N hot keys (based on access frequency logs or a static hot-key list) and pre-populates the cache before the service begins accepting traffic.
+    2.  **Deployment-Aware Warming:** During rolling deployments, warm the new instance's local cache from the outgoing instance's cache (or from a shared Redis cluster) before routing traffic to it.
+    3.  **Lazy Warm with Request Coalescing:** Accept a brief cold period, but combine with the **Mutex Locking** pattern (see Q1 below) to ensure only one request populates each key.
 
 ---
 
@@ -82,7 +89,46 @@ flowchart LR
     ReadService -->|Fast Query| ReadDB
 ```
 
-*   **Change Data Capture (CDC):** Systems like **Debezium** listen to the database binlog/WAL and stream updates to a message broker (Kafka), ensuring the read models remain synchronized.
+*   **Change Data Capture (CDC):** Systems like **Debezium** listen to the database binlog/WAL and stream updates to a message broker (Kafka), ensuring the read models remain synchronized. See [Pattern 03: Multi-Step Processes](./03_multi_step_processes.md) for the Transactional Outbox pattern, which uses CDC to solve the dual-write problem.
+
+*   **The Eventual Consistency Window:**
+    After a write is committed to the write DB, the read model (e.g., Elasticsearch) may be stale for a window of **milliseconds to seconds** — the time it takes for CDC to capture the change, publish it to Kafka, and for the sync engine to update the read DB.
+
+    For most users this is invisible. But for the **writing user** who just submitted an update, seeing stale data is jarring ("I just edited my profile, but the old name still shows").
+
+*   **Solution — Read-Your-Own-Writes in CQRS:**
+    Apply the same technique described in the Read Replication section above: route the **writing user's** subsequent read requests to the **write database** for a short window (e.g., 5–10 seconds) after their write. Other users continue reading from the optimized read model.
+
+    Alternatively, use [Pattern 01: Real-Time Updates](./01_realtime_updates.md) (WebSockets/SSE) to push read-model update notifications to the client. Once the client receives a "sync complete" event, it can safely read from the query store.
+
+---
+
+### D. Materialized Views
+
+A **Materialized View** is a database-level read optimization that stores the result of a complex query as a physical table. Unlike a regular view (which re-executes the query each time), a materialized view is pre-computed and can be indexed.
+
+```sql
+-- Postgres example: pre-compute a product catalog with aggregated review stats
+CREATE MATERIALIZED VIEW product_catalog_mv AS
+SELECT
+    p.id, p.name, p.price,
+    COUNT(r.id) AS review_count,
+    AVG(r.rating) AS avg_rating
+FROM products p
+LEFT JOIN reviews r ON r.product_id = p.id
+GROUP BY p.id, p.name, p.price;
+
+-- Refresh on schedule (e.g., every 5 minutes via pg_cron)
+REFRESH MATERIALIZED VIEW CONCURRENTLY product_catalog_mv;
+```
+
+*   **Trade-offs:**
+    *   **Pros:** Eliminates expensive `JOIN` and aggregation overhead at read time; can be indexed like a regular table; simple to implement within a single database.
+    *   **Cons:** Data is stale between refreshes; `REFRESH MATERIALIZED VIEW` acquires locks (use `CONCURRENTLY` to allow reads during refresh, but it requires a unique index); storage cost of duplicated data.
+
+*   **Best For:** Dashboards, analytics, reporting queries, and any read-heavy query that involves multi-table joins or aggregations that rarely change.
+
+> **Materialized Views vs. CQRS:** A materialized view is a lightweight, single-database alternative to full CQRS. Use materialized views when the read optimization can be expressed as a SQL query within the same database. Use CQRS when the read model requires a fundamentally different storage engine (e.g., Elasticsearch for full-text search).
 
 ---
 
@@ -117,3 +163,82 @@ A **Cache Stampede** occurs when a highly popular cache key expires (e.g., the h
     *   *The Solution:*
         *   **Jitter Expirations:** Always add a random offset (entropy/jitter) to your cache TTLs:
             $$\text{TTL} = \text{Base TTL} + \text{Random Offset (seconds)}$$
+
+---
+
+## 5. Security Considerations
+
+Caching and read replication introduce security surfaces that are often overlooked.
+
+### Cache Poisoning and Data Leakage
+If cache keys do not incorporate **authorization context**, User A's private data could be served to User B.
+*   **Mitigation:** Include the user ID (or role/tenant ID) in the cache key for any user-specific data:
+    ```
+    cache_key = f"user:{user_id}:profile:{profile_id}"
+    ```
+    For shared/public data, use keys without user scope but ensure the underlying query enforces access controls.
+
+### Cache Key Enumeration
+Predictable cache keys (e.g., `product:1`, `product:2`, `product:3`) allow attackers to enumerate and probe for data.
+*   **Mitigation:** For sensitive resources, use non-sequential identifiers (UUIDs) as cache keys. Rate-limit cache lookups. Never expose internal cache keys in API responses.
+
+### Replica Security
+Read replicas must enforce the **same access controls** as the primary database. A common misconfiguration is exposing replicas on a less restricted network segment or with weaker authentication.
+*   **Mitigation:** Apply identical firewall rules, TLS requirements, and role-based access policies to all replicas. Audit replica access logs independently.
+
+### CDN Cache Security
+When using CDN edge caches, ensure `Cache-Control` headers are correctly set for authenticated endpoints. A misconfigured CDN can cache and serve a response containing private data to any subsequent requestor.
+*   **Mitigation:** Set `Cache-Control: private, no-store` for authenticated responses. Use `Vary: Authorization` headers where appropriate.
+
+---
+
+## 6. Capacity Planning and Quantitative Reasoning
+
+### Cache Hit Rate Math
+The cache hit rate directly determines how much load reaches the database:
+
+$$\text{DB Load} = \text{Total Requests/sec} \times (1 - \text{Hit Rate})$$
+
+| Scenario | Total req/sec | Hit Rate | DB req/sec |
+|---|---|---|---|
+| No cache | 10,000 | 0% | 10,000 |
+| Moderate cache | 10,000 | 90% | 1,000 |
+| Well-tuned cache | 10,000 | 95% | 500 |
+| Hot-key optimized | 10,000 | 99% | 100 |
+
+A 5% improvement in hit rate (90% → 95%) **halves** the DB load. This is why cache optimization has outsized returns.
+
+### Working Set Sizing
+Estimate whether your hot data fits in a single Redis node:
+
+$$\text{Cache Size} = \text{Number of Hot Items} \times \text{Avg Item Size}$$
+
+*   **Example:** 1M product listings × 2KB each = **2 GB** — comfortably fits in a single Redis node (typical max: 25–50 GB).
+*   **Example:** 50M user sessions × 5KB each = **250 GB** — requires a Redis Cluster with sharding across multiple nodes.
+
+> **Rule of thumb:** If your working set exceeds 70% of a single Redis node's memory, plan for sharding. Redis Cluster supports up to 1,000 nodes.
+
+### Replication Lag Estimates
+
+| Database | Typical Async Replication Lag | Under Heavy Write Load |
+|---|---|---|
+| PostgreSQL | 10–100ms | 500ms–2s |
+| MySQL (GTID) | 10–50ms | 200ms–1s |
+| Aurora (AWS) | ~10–20ms (shared storage) | ~50ms |
+
+> For read-your-writes consistency, a safe "read from primary" window is $2 \times \text{p99 replication lag}$. For Postgres under normal load, this is approximately $2 \times 100\text{ms} = 200\text{ms}$, but a conservative production setting is 3–5 seconds to account for load spikes.
+
+### CQRS Sync Latency Budget
+The end-to-end latency from write commit to read model update in a CQRS system:
+
+$$\text{Sync Latency} = \text{CDC Capture} + \text{Kafka Publish} + \text{Consumer Processing} + \text{Read DB Write}$$
+
+Typical breakdown: 100ms (CDC) + 10ms (Kafka) + 50ms (processing) + 20ms (ES index) = **~180ms** end-to-end.
+
+---
+
+> **Cross-references:**
+> *   For write-side scaling strategies that complement these read patterns, see [Pattern 05: Scaling Writes](./05_scaling_writes.md).
+> *   For handling cache invalidation in real-time, see [Pattern 01: Real-Time Updates](./01_realtime_updates.md).
+> *   For contention issues when multiple writers invalidate the same cache key, see [Pattern 02: Dealing with Contention](./02_dealing_with_contention.md).
+> *   For caching large binary objects (images, videos), see [Pattern 06: Large Blobs](./06_large_blobs.md).

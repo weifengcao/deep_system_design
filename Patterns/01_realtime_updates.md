@@ -53,7 +53,7 @@ sequenceDiagram
 ### B. Long Polling
 *The "Hanging GET" (Semi-Push)*
 
-The client sends an HTTP request, but the server **holds the request open** (hangs) until new data is available or a timeout occurs. Once the client receives a response, it immediately opens a new request.
+The client sends an HTTP request, but the server **holds the request open** (hangs) until new data is available or a timeout occurs. Once the client receives a response, it immediately opens a new request. Long polling remains a practical fallback for delivering [asynchronous task completion status](./07_long_running_tasks.md) when WebSockets are unavailable.
 
 ```mermaid
 sequenceDiagram
@@ -93,7 +93,7 @@ sequenceDiagram
 
 *   **Trade-offs:**
     *   **Pros:** Lightweight and simple to implement; built-in automatic browser reconnection with last-event IDs; works over standard HTTP/2 (allowing multiplexing); built-in backpressure.
-    *   **Cons:** Unidirectional only (client cannot send data back over this connection); limited browser support outside of web environments (e.g., standard iOS/Android sockets require custom wrappers); vulnerable to HTTP/1.1 connection exhaustion limits if HTTP/2 is not supported.
+    *   **Cons:** Breaks synchronous response loops. The client cannot receive an immediate confirmation of the write. The architecture must introduce a **status poll** or **WebSocket update** to inform the user when the request completes — see [Pattern 07: Long-Running Tasks](./07_long_running_tasks.md) for the full async task completion pattern. Unidirectional only (client cannot send data back over this connection); limited browser support outside of web environments (e.g., standard iOS/Android sockets require custom wrappers); vulnerable to HTTP/1.1 connection exhaustion limits if HTTP/2 is not supported.
 
 ---
 
@@ -144,6 +144,10 @@ sequenceDiagram
 *   **Trade-offs:**
     *   **Pros:** Lowest possible latency (no intermediate server hop); zero server bandwidth cost for raw media streams.
     *   **Cons:** High implementation complexity; hard to scale for multi-user scenarios (requires Selective Forwarding Units (SFUs)); firewalls and symmetric NATs block direct connections in up to 20% of cases, requiring expensive TURN relay servers.
+    *   **STUN vs TURN — NAT Traversal Deep Dive:**
+        *   **STUN (Session Traversal Utilities for NAT):** A lightweight protocol where the client queries a STUN server to discover its public IP and port mapping. The peer then uses this information for direct NAT hole-punching. STUN servers are cheap to operate (minimal bandwidth) and successfully establish direct P2P connections in **~80% of cases** (full-cone, restricted-cone, and port-restricted NATs).
+        *   **TURN (Traversal Using Relays around NAT):** A full media relay server that forwards all traffic between peers. Required when symmetric NATs (common in enterprise networks) block direct hole-punching. TURN servers carry **100% of the media bandwidth cost**, making them 10-50x more expensive to operate than STUN. Budget rule of thumb: plan for ~20% of sessions requiring TURN relay.
+        *   **ICE (Interactive Connectivity Establishment):** The umbrella framework that tries connection methods in order: host candidates → STUN (server-reflexive) → TURN (relay), selecting the lowest-latency successful path.
 
 ---
 
@@ -208,6 +212,10 @@ flowchart TD
 *   **Pros:** Zero broadcast overhead; highly efficient point-to-point routing ($O(1)$).
     *   **Cons:** Server node additions or removals trigger connection rebalancing, which can drop sockets and cause reconnection storms.
 
+### Connection Draining During Rolling Deployments
+
+When performing rolling deployments or scaling down gateway servers, abruptly terminating a node drops all active WebSocket/SSE connections, triggering reconnection storms (see Q1 below). The solution is **connection draining**: the load balancer marks the node as "draining" so it stops accepting *new* connections, while existing connections are given a grace period (e.g., 30-60 seconds) to complete in-flight messages and gracefully close. Kubernetes supports this via `terminationGracePeriodSeconds`; AWS ALB/NLB supports deregistration delay. Always pair draining with client-side exponential backoff to smooth the reconnection curve across the remaining healthy nodes.
+
 ---
 
 ## 5. Common Deep Dives & Edge Cases
@@ -232,3 +240,76 @@ In a distributed real-time chat application, packets may take different network 
 *   **The Solution:**
     1.  **Distributed Sequencer:** Generate unique, monotonically increasing message IDs using a centralized system like **Snowflake IDs** or a Redis atomic counter per channel.
     2.  **Client-Side Buffering:** Have clients buffer incoming messages and sort them by their sequence ID or logical clock (e.g., Lamport Timestamps) rather than the physical time the packet was received.
+
+---
+
+## 6. Security Considerations
+
+Real-time connections are long-lived and stateful, which creates a unique attack surface compared to standard request/response HTTP.
+
+| Concern | Mitigation |
+|---|---|
+| **Origin Validation** | During the WebSocket upgrade handshake, validate the `Origin` header against an allowlist of trusted domains. Reject upgrades from unexpected origins to prevent Cross-Site WebSocket Hijacking (CSWSH). |
+| **Authentication on Upgrade** | WebSocket connections bypass standard HTTP middleware after the initial handshake. Pass a JWT token either as a query parameter (`wss://host/ws?token=<jwt>`) or in the **first message** after connection establishment. Validate and extract claims server-side before allowing any subsequent frames. Prefer the first-message approach to avoid token leakage in server access logs. |
+| **Per-Connection Rate Limiting** | A single malicious client can flood the server with messages over an open WebSocket. Enforce a per-connection message rate limit (e.g., 100 messages/sec) using a token bucket algorithm. Disconnect clients that exceed the threshold. |
+| **Transport Encryption** | Always use `wss://` (WebSocket over TLS) in production — never plaintext `ws://`. This prevents man-in-the-middle attacks and ensures compatibility with modern browsers that block mixed content. |
+| **SSE Security Model** | SSE connections use standard HTTP, so standard `Authorization` headers, cookies, and CORS policies apply naturally. This makes SSE's security model significantly simpler than WebSockets. |
+| **Message Authorization** | Even after a connection is authenticated, validate that the user is authorized to subscribe to the specific channels or topics they request. A valid JWT does not imply access to all channels. |
+
+> **Cross-reference:** For contention-specific security concerns (e.g., lock starvation attacks, Redis ACLs), see [Pattern 02: Dealing with Contention — Security Considerations](./02_dealing_with_contention.md).
+
+---
+
+## 7. Capacity Planning and Quantitative Reasoning
+
+### WebSocket Connection Density per Server
+
+Each WebSocket connection consumes a TCP socket (file descriptor) and a small amount of kernel and application memory. Typical per-connection overhead:
+
+| Resource | Per Connection | Notes |
+|---|---|---|
+| Kernel socket buffer | ~4-8 KB | Tunable via `net.core.rmem_default` / `wmem_default` |
+| Application-level state | ~1-2 KB | User ID, channel subscriptions, auth context |
+| File descriptor | 1 fd | Default `ulimit -n` is often 1024 — must be raised to 100K+ |
+
+With kernel tuning (`ulimit -n 200000`, `sysctl net.ipv4.ip_local_port_range`, epoll/kqueue), a single gateway node can sustain **50,000-100,000 concurrent WebSocket connections** depending on message throughput and available RAM.
+
+### Fleet Sizing Formula
+
+$$\text{Total Gateway Servers} = \left\lceil \frac{\text{Peak Active Users}}{\text{Connections per Server}} \right\rceil \times \text{Redundancy Factor}$$
+
+**Example:**
+- 10 million peak active users
+- 80,000 connections per server (conservative)
+- 1.25x redundancy factor (for rolling deployments and headroom)
+
+$$\text{Servers} = \left\lceil \frac{10{,}000{,}000}{80{,}000} \right\rceil \times 1.25 = 125 \times 1.25 = \approx 157 \text{ gateway servers}$$
+
+### Bandwidth Estimation
+
+If each connected user receives an average of 1 push message per second at ~500 bytes per message:
+
+$$\text{Egress per Server} = 80{,}000 \times 500\text{ B} = 40\text{ MB/s} = 320\text{ Mbps}$$
+
+At 157 servers, total cluster egress:
+
+$$\text{Total Egress} = 157 \times 320\text{ Mbps} \approx 50\text{ Gbps}$$
+
+This is significant — ensure your network fabric and cloud egress budget can support this. Consider message compression (e.g., `permessage-deflate` WebSocket extension) to reduce bandwidth by 60-80% for JSON payloads.
+
+### Key Kernel Tuning Checklist
+
+```bash
+# File descriptor limit (per process)
+ulimit -n 200000
+
+# Ephemeral port range (for outbound connections)
+sysctl -w net.ipv4.ip_local_port_range="1024 65535"
+
+# TCP connection backlog
+sysctl -w net.core.somaxconn=65535
+
+# Socket buffer sizes
+sysctl -w net.core.rmem_max=16777216
+sysctl -w net.core.wmem_max=16777216
+```

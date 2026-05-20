@@ -42,6 +42,42 @@ sequenceDiagram
     *   **Pros:** Application servers consume zero CPU or network bandwidth during uploads; infinite horizontal scale (delegated to cloud providers like Amazon S3 or Google Cloud Storage); extremely secure (time-limited access).
     *   **Cons:** Application server cannot validate the binary contents *during* the upload (e.g., checking if the file is corrupted or contains malware). Verification must be handled asynchronously post-upload.
 
+*   **Async Upload Validation Pipeline (Staff+ Follow-Up):**
+
+    Since the application server is bypassed during direct-to-S3 uploads, you **must** build an asynchronous post-upload validation pipeline. This is one of the most common Staff+ level follow-up questions for the pre-signed URL pattern.
+
+    ```mermaid
+    sequenceDiagram
+        autonumber
+        participant S3 as Object Storage
+        participant Event as Event Notification
+        participant Worker as Validation Worker
+        participant Scanner as Virus Scanner
+        participant DB as Metadata DB
+        participant Notify as Notification Service
+        actor Client as Client
+
+        S3->>Event: "S3 PutObject event triggered"
+        Event->>Worker: "Invoke Lambda or poll SQS queue"
+        Worker->>S3: "Download blob for inspection"
+        Worker->>Scanner: "Run ClamAV or cloud-native scan"
+        Scanner-->>Worker: "CLEAN or INFECTED result"
+        Worker->>Worker: "Validate format via magic bytes and file structure"
+        alt Validation Passed
+            Worker->>DB: "UPDATE status = VALIDATED"
+            Worker->>Notify: "Send success via WebSocket or webhook"
+            Notify-->>Client: "Upload validated and ready"
+        else Validation Failed
+            Worker->>S3: "Delete infected or invalid blob"
+            Worker->>DB: "UPDATE status = REJECTED with reason"
+            Worker->>Notify: "Send rejection via WebSocket or webhook"
+            Notify-->>Client: "Upload rejected with reason"
+        end
+    ```
+
+    *   The notification step can use [Pattern 01 (Real-time Updates)](./01_realtime_updates.md) — push upload status to the client over a WebSocket channel rather than forcing them to poll.
+    *   The validation worker itself is a classic [Pattern 07 (Long-Running Tasks)](./07_long_running_tasks.md) use case — decouple heavy compute (virus scanning, format validation) from the request path.
+
 ---
 
 ### B. CDN Edge Delivery & Caching (Read Path)
@@ -69,6 +105,27 @@ If a user uploads a single 10GB file over a standard connection and the network 
     4.  If one chunk fails, the client only retries that specific chunk.
     5.  Once all chunks are uploaded, the client sends a complete request, and the object store merges the chunks into the single master blob on the server side.
 
+*   **Incomplete Multipart Upload Cleanup:**
+    Abandoned multipart uploads (where the client crashes mid-upload or never sends the complete request) still incur storage charges for the uploaded parts. **You are charged for parts that were never assembled.** Configure an S3 Lifecycle Policy to automatically abort incomplete multipart uploads:
+
+    ```json
+    {
+      "Rules": [{
+        "ID": "AbortIncompleteMultipartUploads",
+        "Status": "Enabled",
+        "Filter": {},
+        "AbortIncompleteMultipartUpload": {
+          "DaysAfterInitiation": 7
+        }
+      }]
+    }
+    ```
+
+    > Without this policy, orphaned parts accumulate silently and can represent significant hidden costs at scale.
+
+*   **Resumable Uploads for Unreliable Networks:**
+    For mobile clients or users on flaky connections, consider the **tus** open protocol (`tus.io`) or the **GCS Resumable Upload API**. These protocols allow the client to query the server for the last successfully received byte offset and resume from that exact point — no re-uploading of already-transferred data. This is especially critical for large uploads (multi-GB) over cellular networks where connection drops are frequent.
+
 ---
 
 ### D. Dynamic Video Chunking (HLS/DASH Streaming)
@@ -79,6 +136,30 @@ Instead of serving a single massive 2GB video file, real-time video streaming se
 4.  If network speeds drop, the player automatically switches and requests lower-resolution chunks for the next 2-second window, preventing buffering.
 
 ---
+
+### E. Content-Addressable Storage (Deduplication)
+When many users upload identical or near-identical files (e.g., the same profile photo, the same PDF, the same Docker layer), naive storage assigns each upload a unique key and stores a full copy. Content-addressable storage eliminates this waste.
+
+*   **How It Works:**
+    1.  The client computes a **SHA-256 hash** of the file content before uploading.
+    2.  The client sends the hash to the API server as part of the upload request.
+    3.  The API server checks if an object with that hash as its storage key already exists.
+    4.  If the key exists → **skip the upload entirely** (instant dedup). Return a reference to the existing object.
+    5.  If the key does not exist → proceed with the normal pre-signed URL upload flow, using the hash as the object key.
+
+*   **Trade-offs:**
+
+    | Aspect | Benefit | Cost |
+    |---|---|---|
+    | **Storage** | Massive savings — identical files stored only once | None |
+    | **Upload Latency** | Skip upload entirely for duplicates (instant) | Must compute SHA-256 client-side before upload begins |
+    | **Integrity** | Hash doubles as a checksum for corruption detection | Extremely rare hash collisions (SHA-256: $$2^{-256}$$ probability) |
+    | **Deletion** | N/A | Requires reference counting — cannot delete a blob until all references are removed |
+
+*   **Real-World Use Cases:**
+    *   **Dropbox:** Uses content-addressable chunks to deduplicate files across all users, saving petabytes of storage.
+    *   **Docker / OCI Container Registries:** Each image layer is stored by its content hash (digest). Pushing an image with layers that already exist on the registry skips those layers entirely.
+    *   **Git:** Every object (blob, tree, commit) is stored by its SHA-1 hash, enabling natural deduplication across branches and clones.
 
 ## 3. Large Blob Storage & Delivery Matrix
 
@@ -104,3 +185,83 @@ If you place media assets in public S3 buckets, anyone can copy the URL and shar
 If a popular video goes viral globally, thousands of CDN edge servers around the world might simultaneously experience cache misses. If all those edge servers query your origin S3 storage at the same time, it can cause a **Cache Stampede** on your origin storage, incurring massive egress costs and throttling.
 *   **The Solution (Origin Shielding):**
     Introduce a centralized, high-capacity cache layer (the Origin Shield) between your global edge CDN servers and your primary S3 bucket. All edge cache misses route first to this shield cache. The shield pools requests, fetches the asset from S3 once, caches it, and distributes it to the edge nodes, protecting S3 from duplicate reads.
+
+---
+
+## 5. Security Considerations
+
+Large blob systems have a uniquely large attack surface because untrusted binary data flows directly from clients to storage, bypassing application servers.
+
+### Pre-Signed URL Scope (Principle of Least Privilege)
+*   **Always** scope pre-signed URLs to the minimum required permissions:
+    *   **Action:** `PUT` only (never `GET` or `DELETE` on upload URLs).
+    *   **Key Prefix:** Restrict the URL to a specific S3 key prefix (e.g., `uploads/{user_id}/{uuid}`) so a malicious client cannot overwrite other users' files.
+    *   **Size Limit:** Set `Content-Length` conditions (e.g., max 5GB) to prevent abuse of storage quotas.
+    *   **Expiration:** Keep TTLs short (5–15 minutes). A leaked URL becomes useless quickly.
+
+### Content-Type Validation (Never Trust the Client)
+*   Clients can set any `Content-Type` header (e.g., claiming a `.exe` is `image/jpeg`). **Always validate server-side** by inspecting the file's **magic bytes** (the first few bytes of the file that identify its format):
+    *   JPEG: `FF D8 FF`
+    *   PNG: `89 50 4E 47`
+    *   PDF: `25 50 44 46`
+*   Reject files where the magic bytes do not match the declared Content-Type. This prevents stored XSS attacks where an attacker uploads an HTML file disguised as an image.
+
+### Malware Scanning
+*   Integrate virus scanning into the async validation pipeline (see Section 2A above).
+*   **Open-source:** ClamAV running on dedicated scanner instances behind an SQS queue.
+*   **Cloud-native:** AWS GuardDuty Malware Protection for S3 (automatic scanning on upload), Google Cloud Security Command Center.
+*   **Key design decision:** Files should be quarantined (not publicly accessible) until the scan completes and returns CLEAN.
+
+### Signed Cookies vs Signed URLs
+
+| Mechanism | Best For | Why |
+|---|---|---|
+| **Signed URLs** | Single-file downloads, sharing links with external users | Each URL is self-contained with its own signature and expiry |
+| **Signed Cookies** | Streaming (HLS/DASH), accessing many related assets | One authentication event grants access to all chunks under a path prefix — avoids signing thousands of individual chunk URLs |
+
+*   For HLS video streaming with 1,000+ chunks, signed cookies reduce authentication overhead from O(n) signature generations to O(1).
+
+---
+
+## 6. Capacity Planning and Quantitative Reasoning
+
+Back-of-envelope math is critical for large blob systems because storage and egress costs dominate the infrastructure budget.
+
+### Storage Cost Tiers (AWS S3, us-east-1, as of 2024)
+
+| Tier | Cost per GB/month | Access Pattern | Use Case |
+|---|---|---|---|
+| S3 Standard | ~\$0.023 | Frequently accessed | Active video library, recent uploads |
+| S3 Infrequent Access (IA) | ~\$0.0125 | Accessed < 1x/month | Older content, user archives |
+| S3 Glacier Instant Retrieval | ~\$0.004 | Rarely accessed, ms retrieval | Compliance archives, cold backups |
+| S3 Glacier Deep Archive | ~\$0.00099 | Accessed 1-2x/year, 12hr retrieval | Legal holds, regulatory archives |
+
+> **Lifecycle policies** should automatically transition blobs from Standard → IA → Glacier based on access patterns. A well-tuned policy can reduce storage costs by 60-80%.
+
+### CDN Cache Hit Ratio
+*   A well-configured CDN achieves a **95%+ cache hit ratio** for popular content.
+*   At 95% hit rate, your origin (S3) only serves **5% of total requests** — a 20x reduction in origin load and egress.
+*   Cache hit ratio depends on: TTL settings, content popularity distribution (Zipf's law), number of PoPs, and cache eviction policies.
+
+### Egress Cost Analysis
+
+| Path | Cost per GB |
+|---|---|
+| S3 Direct to Internet | ~\$0.09 |
+| CloudFront (on-demand) | ~\$0.085 |
+| CloudFront (reserved capacity) | ~\$0.025–\$0.040 |
+| CloudFront (cache hit — no origin egress) | \$0.00 origin cost |
+
+### Worked Example: Video Platform Egress
+
+$$\text{Daily views} = 1{,}000{,}000$$
+$$\text{Avg video size} = 500 \text{ MB}$$
+$$\text{Total egress (no caching)} = 10^6 \times 0.5 \text{ GB} = 500{,}000 \text{ GB/day} = 500 \text{ TB/day}$$
+$$\text{Cost without CDN caching} = 500{,}000 \times \$0.085 = \$42{,}500/\text{day}$$
+$$\text{Cost with 95\% CDN cache hit} = 500{,}000 \times 0.05 \times \$0.085 = \$2{,}125/\text{day}$$
+
+> The 95% cache hit ratio reduces daily egress costs from **\$42,500 to \$2,125** — a **20x cost reduction**. This is why CDN configuration is not optional for any media-heavy platform.
+
+### Cross-Pattern References
+*   **[Pattern 01 (Real-time Updates)](./01_realtime_updates.md):** Use WebSocket channels to push upload status (UPLOADING → VALIDATING → VALIDATED/REJECTED) and transcoding progress to clients in real time, rather than requiring them to poll.
+*   **[Pattern 07 (Long-Running Tasks)](./07_long_running_tasks.md):** Video transcoding (upload → message queue → FFmpeg worker pool → multiple resolution outputs → update metadata DB) is a textbook long-running task. Use dead-letter queues for failed transcoding jobs and idempotency keys to prevent duplicate processing.

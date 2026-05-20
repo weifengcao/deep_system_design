@@ -77,4 +77,41 @@ For instance, swap Simple Polling for **WebSockets with a Consistent Hash Routin
 
 ---
 
+## Worked Example: Composing Patterns in an Interview
+
+Most interview questions don't map to a single pattern — they require **composing multiple patterns** together. Recognizing which patterns apply and how they interact is what separates Senior from Staff+ level answers.
+
+**Example Prompt:** *"Design a Video Sharing Platform (like YouTube)"*
+
+| System Requirement | Pattern | Specific Techniques |
+|---|---|---|
+| Users upload large video files (up to 10GB) | **[Pattern 06: Large Blobs](./06_large_blobs.md)** | Pre-signed URLs for direct-to-S3 upload, multipart and resumable uploads for reliability, CDN edge delivery with HLS chunking for playback |
+| Uploaded videos must be transcoded into multiple resolutions | **[Pattern 07: Long-Running Tasks](./07_long_running_tasks.md)** | Async transcoding pipeline: S3 upload event → SQS/Kafka queue → FFmpeg worker pool → output 360p/720p/1080p/4K chunks → update metadata DB |
+| View counts must handle millions of concurrent increments | **[Pattern 05: Scaling Writes](./05_scaling_writes.md)** | Write-buffered ingestion: client view events → Kafka topic → batch aggregation every 30s → bulk UPDATE to Postgres/DynamoDB |
+| Video metadata and search must be fast at global scale | **[Pattern 04: Scaling Reads](./04_scaling_reads.md)** | Redis cache for hot video metadata, CDN for static assets, read replicas for search queries, denormalized read models |
+| Users see real-time upload progress and transcoding status | **[Pattern 01: Real-time Updates](./01_realtime_updates.md)** | WebSocket push notifications: upload progress bar, transcoding stage updates (QUEUED → PROCESSING → COMPLETE), live view count tickers |
+| Multiple editors can update video title and description concurrently | **[Pattern 02: Dealing with Contention](./02_dealing_with_contention.md)** | Optimistic concurrency control (OCC) with version numbers on video metadata rows to detect and resolve conflicting edits |
+
+```mermaid
+flowchart LR
+    Upload["Video Upload"] --> P06["Pattern 06: Large Blobs"]
+    Upload --> P07["Pattern 07: Long-Running Tasks"]
+    Playback["Video Playback"] --> P04["Pattern 04: Scaling Reads"]
+    Playback --> P06
+    Engagement["View Counts"] --> P05["Pattern 05: Scaling Writes"]
+    Notifications["Status Updates"] --> P01["Pattern 01: Real-time Updates"]
+    Editing["Metadata Edits"] --> P02["Pattern 02: Contention"]
+
+    style P06 fill:#f9f,stroke:#333,stroke-width:2px
+    style P07 fill:#bfb,stroke:#333,stroke-width:2px
+    style P04 fill:#f9f,stroke:#333,stroke-width:2px
+    style P05 fill:#f9f,stroke:#333,stroke-width:2px
+    style P01 fill:#bbf,stroke:#333,stroke-width:2px
+    style P02 fill:#fbb,stroke:#333,stroke-width:2px
+```
+
+> **Interview Tip:** Start by listing the functional requirements, then map each one to a pattern. This shows the interviewer you have a structured decomposition framework rather than reciting a memorized answer.
+
+---
+
 *Select a pattern file above to begin deep diving into the specific architecture, trade-offs, and Mermaid flowcharts!*
