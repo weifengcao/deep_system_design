@@ -32,11 +32,13 @@ The client repeatedly sends traditional HTTP requests to the server on a fixed s
 ```mermaid
 sequenceDiagram
     autonumber
-    client->>server: GET /notifications (HTTP/1.1)
-    server-->>client: 200 OK (No new notifications)
+    participant client as Client
+    participant server as Server
+    client->>server: "GET /notifications (HTTP/1.1)"
+    server-->>client: "200 OK (No new notifications)"
     Note over client,server: Sleep 5 seconds
-    client->>server: GET /notifications (HTTP/1.1)
-    server-->>client: 200 OK (1 new notification!)
+    client->>server: "GET /notifications (HTTP/1.1)"
+    server-->>client: "200 OK (1 new notification!)"
 ```
 
 *   **Trade-offs:**
@@ -56,11 +58,13 @@ The client sends an HTTP request, but the server **holds the request open** (han
 ```mermaid
 sequenceDiagram
     autonumber
-    client->>server: GET /notifications (HTTP/1.1)
+    participant client as Client
+    participant server as Server
+    client->>server: "GET /notifications (HTTP/1.1)"
     Note over server: No updates. Hold request open...
     Note over server: Event occurs!
-    server-->>client: 200 OK (Notification Data)
-    client->>server: GET /notifications (HTTP/1.1)
+    server-->>client: "200 OK (Notification Data)"
+    client->>server: "GET /notifications (HTTP/1.1)"
     Note over server: Hold request open...
 ```
 
@@ -78,11 +82,13 @@ A persistent, one-way connection from server to client over standard HTTP. The c
 ```mermaid
 sequenceDiagram
     autonumber
-    client->>server: GET /stream (Accept: text/event-stream)
-    server-->>client: 200 OK (Connection established)
+    participant client as Client
+    participant server as Server
+    client->>server: "GET /stream (Accept: text/event-stream)"
+    server-->>client: "200 OK (Connection established)"
     Note over client,server: Persistent Unidirectional HTTP/2 Connection
-    server->>client: "data: {'msg': 'New notification!'}"
-    server->>client: "data: {'msg': 'Another update!'}"
+    server->>client: "data: {msg: New notification!}"
+    server->>client: "data: {msg: Another update!}"
 ```
 
 *   **Trade-offs:**
@@ -99,13 +105,15 @@ A persistent, bidirectional, full-duplex connection between client and server. I
 ```mermaid
 sequenceDiagram
     autonumber
-    client->>server: GET /ws (Upgrade: websocket)
-    server-->>client: 101 Switching Protocols
-    Note over client,server: Stateful Bidirectional TCP Tunnel (ws:// or wss://)
-    client->>server: ping (Keep-alive)
-    server-->>client: pong
-    client->>server: data: "User typing..."
-    server->>client: data: "Message received"
+    participant client as Client
+    participant server as Server
+    client->>server: "GET /ws (Upgrade: websocket)"
+    server-->>client: "101 Switching Protocols"
+    Note over client,server: Stateful Bidirectional TCP Tunnel
+    client->>server: "ping (Keep-alive)"
+    server-->>client: "pong"
+    client->>server: "User typing..."
+    server->>client: "Message received"
 ```
 
 *   **Trade-offs:**
@@ -122,10 +130,13 @@ Direct browser-to-browser (peer-to-peer) communication. A server is only require
 ```mermaid
 sequenceDiagram
     autonumber
-    clientA->>signaling_server: Send SDP Offer
-    signaling_server->>clientB: Forward SDP Offer
-    clientB->>signaling_server: Send SDP Answer
-    signaling_server->>clientA: Forward SDP Answer
+    participant clientA as Client A
+    participant sig as Signaling Server
+    participant clientB as Client B
+    clientA->>sig: "Send SDP Offer"
+    sig->>clientB: "Forward SDP Offer"
+    clientB->>sig: "Send SDP Answer"
+    sig->>clientA: "Forward SDP Answer"
     Note over clientA,clientB: P2P UDP Connection Established
     clientA->>clientB: "Direct media/data streaming (Bidirectional)"
 ```

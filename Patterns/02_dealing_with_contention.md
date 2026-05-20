@@ -104,12 +104,12 @@ Offload the coordination to a fast, single-threaded, in-memory store like Redis.
 sequenceDiagram
     autonumber
     actor User as Client
-    actor App as API Worker
+    participant App as API Worker
     participant Redis as Redis Cache
     participant DB as Postgres DB
 
     User->>App: "Request Purchase"
-    App->>Redis: "EVALSHA 'Lua Script (Check & Decrement)'"
+    App->>Redis: "EVALSHA Lua Script: Check and Decrement"
     Note over Redis: Single-threaded sequence
     Redis-->>App: "Return 1 (Success!)"
     App->>DB: "Async write update to persist balance"
