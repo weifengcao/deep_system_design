@@ -33,6 +33,7 @@ Master the fundamental distributed systems principles and networking layers that
 
 | # | Core Concept | Architectural Focus | Key Highlights |
 |---|---|---|---|
+| **00** | **[System Design Playbook](./Core_Concepts/00-system-design-playbook.md)** | 45-Minute Interview Strategy Blueprint | 45-min timeline, requirement gathering, back-of-envelope sizing, trade-offs, resilience |
 | **01** | **[Networking Essentials](./Core_Concepts/01-networking-essentials.md)** | Network plumbing & protocols | OSI layers, TCP vs UDP, HTTP/2/3, gRPC, mTLS, L4/L7 load balancers, connection draining |
 | **02** | **[API Design](./Core_Concepts/02-api-design.md)** | Robust client-server contracts | REST vs GraphQL, idempotency keys, cursor pagination, rate-limiting algorithms, Postel's Law |
 | **03** | **[Data Modeling](./Core_Concepts/03-data-modeling.md)** | System storage & state representation | SQL vs NoSQL, schema design, soft deletes, optimistic locking, event sourcing, AI agent schemas |

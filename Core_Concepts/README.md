@@ -8,6 +8,7 @@ This section covers the fundamental building blocks for staff+ backend engineeri
 
 | # | Topic | Key Concepts |
 |---|-------|-------------|
+| 00 | [System Design Playbook](./00-system-design-playbook.md) | 45-minute timeline, requirements gathering, capacity estimation equations, trade-off frameworks, security and resilience guardrails |
 | 01 | [Networking Essentials](./01-networking-essentials.md) | OSI layers, TCP vs UDP, HTTP/2/3, REST/GraphQL/gRPC, WebSocket fan-out, mTLS, load balancers, CDN anycast, connection draining |
 | 02 | [API Design](./02-api-design.md) | REST resource modeling, HTTP methods, idempotency keys + TTL, pagination, rate limiting algorithms, backward compat / Postel's Law |
 | 03 | [Data Modeling](./03-data-modeling.md) | SQL vs NoSQL, schema design, soft deletes, optimistic locking, event sourcing, agent schemas |
@@ -33,13 +34,13 @@ This section covers the fundamental building blocks for staff+ backend engineeri
 ## Reading Order Recommendations
 
 **Security-aware backend role (target role):**
-10 → 07 → 01 → 04 → 02 → 03 → 05 → 06 → 08 → 09
+00 → 10 → 07 → 01 → 04 → 02 → 03 → 05 → 06 → 08 → 09
 
 **Distributed systems / infrastructure:**
-06 → 05 → 07 → 08 → 04 → 01 → 09 → 02 → 03 → 10
+00 → 06 → 05 → 07 → 08 → 04 → 01 → 09 → 02 → 03 → 10
 
 **Full-stack / product backend:**
-02 → 03 → 04 → 01 → 07 → 08 → 09 → 05 → 06 → 10
+00 → 02 → 03 → 04 → 01 → 07 → 08 → 09 → 05 → 06 → 10
 
 ---
 
