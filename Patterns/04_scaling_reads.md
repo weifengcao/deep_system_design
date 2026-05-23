@@ -4,6 +4,18 @@ The **Scaling Reads** pattern is applied when a system experiences high read thr
 
 In such systems, the database becomes a bottleneck due to disk I/O, heavy query CPU utilization, or complex multi-table `JOIN` operations. The goal is to design an architecture that optimizes data retrieval with sub-millisecond latencies.
 
+**The read latency hierarchy (fastest to slowest):**
+
+```
+In-process cache (L1):   < 1 µs   (local dict/hashmap in application memory)
+Redis / Memcached:        0.1–1 ms (network hop, in-memory)
+Read replica (same DC):   1–10 ms  (network + disk)
+Primary DB:               2–50 ms  (network + disk + lock contention)
+Cross-region DB:          50–200 ms (geography)
+```
+
+The goal: serve the maximum fraction of reads from the fastest, cheapest tier.
+
 ---
 
 ## 1. The Scaling Hierarchy for Reads
@@ -20,7 +32,31 @@ When scaling reads, follow the architectural scaling hierarchy:
 
 Let's explore the key strategies for scaling reads, including sequence flows and trade-offs.
 
-### A. Caching Strategies (The First Line of Defense)
+### A.0 In-Process Cache (L1 — Application-Level)
+
+Cache hot objects directly in application server memory. **Zero network cost.**
+
+```python
+from cachetools import TTLCache
+
+# Per-process cache: 1000 objects, max 60s TTL
+_config_cache = TTLCache(maxsize=1000, ttl=60)
+
+def get_feature_flags():
+    if "flags" in _config_cache:
+        return _config_cache["flags"]
+    flags = remote_config_service.fetch()
+    _config_cache["flags"] = flags
+    return flags
+```
+
+**Best for:** Rarely-changing reference data (feature flags, config, country codes), objects needed on every request, per-request deduplication (DataLoader pattern).
+
+**Limitation:** Each application server has its own copy — invalidation requires broadcasting to all servers. Accept stale data with short TTLs, or skip L1 for data requiring immediate consistency.
+
+---
+
+### A. Caching Strategies (Distributed Cache — Redis/Memcached)
 Caching places a high-speed memory layer (e.g., Redis or Memcached) in front of the database.
 
 ```mermaid
@@ -44,6 +80,35 @@ sequenceDiagram
     2.  **Write-Through:** Application writes to cache and DB simultaneously. *Guarantees fresh data, but increases write latency.*
     3.  **Write-Behind (Write-Back):** Application writes to cache immediately, and cache asynchronously flushes writes to DB. *Extreme write throughput, but risks data loss on cache crash.*
     4.  **Read-Through:** The cache itself is responsible for fetching data from the DB on a miss (the application only ever talks to the cache). *Simplifies application code and centralizes cache-population logic, but couples the cache layer to the data source and makes cache configuration more complex.*
+
+*   **Cache Key Design:**
+    ```python
+    # Bad: too coarse (one cache miss invalidates everything)
+    redis.get("all_events")
+    
+    # Bad: too fine (very low hit rate)
+    redis.get(f"event:{id}:field:name")
+    
+    # Good: logical object boundary
+    redis.get(f"event:{id}")           # full event object
+    redis.get(f"user:{id}:feed")       # user's precomputed feed
+    redis.get(f"search:{hash(query)}") # search result set
+    ```
+
+*   **Cache Hit Rate Math:**
+    ```
+    Target: 95% cache hit rate
+    At 100K reads/sec:
+      Cache hits: 95K/sec (served from Redis at < 1ms)
+      Cache misses: 5K/sec (hit database)
+    
+    Postgres can handle 10K–50K QPS on a well-indexed table
+    → 5K/sec database load is comfortable
+    
+    If cache hit rate drops to 80%:
+      Cache misses: 20K/sec → database potentially stressed
+      → Add more cache nodes or increase TTL
+    ```
 
 *   **Cache Warming Strategies:**
     On cold starts, new deployments, or after a full cache flush, the cache is empty and all requests become cache misses — effectively a self-inflicted **cache stampede**. To mitigate this:
@@ -129,6 +194,43 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY product_catalog_mv;
 *   **Best For:** Dashboards, analytics, reporting queries, and any read-heavy query that involves multi-table joins or aggregations that rarely change.
 
 > **Materialized Views vs. CQRS:** A materialized view is a lightweight, single-database alternative to full CQRS. Use materialized views when the read optimization can be expressed as a SQL query within the same database. Use CQRS when the read model requires a fundamentally different storage engine (e.g., Elasticsearch for full-text search).
+
+---
+
+## 2.5 Read Scaling Decision Tree
+
+```
+Is content the same for all users (public)?
+  YES → CDN (start here; cheapest and most impactful)
+  NO  → continue
+
+Is the data small and hot (< 1GB, accessed constantly)?
+  YES → In-process cache (L1) for per-server hot objects
+  MAYBE → Redis (shared cache across all servers)
+
+Does the data change frequently?
+  NO  → Cache with long TTL (hours/days)
+  YES → Cache with short TTL + invalidate on write
+
+Is the query expensive (join, aggregation)?
+  YES → Materialized view or denormalize to avoid the join
+  NO  → Read replica is sufficient
+
+Is personalization required?
+  NO  → CDN + Redis covers most cases
+  YES → Read replica (can't cache personalized data at CDN)
+
+Is read volume > 50K QPS?
+  YES → CQRS / separate read store
+  NO  → Read replicas + Redis probably sufficient
+
+Quick sizing guide:
+  < 1K QPS    → Single Postgres instance
+  1K–10K QPS  → Add Redis cache (cache-aside)
+  10K–100K QPS → Redis + read replicas
+  > 100K QPS  → CDN + Redis + read replicas + materialized views
+  > 1M QPS    → CQRS + dedicated read store (Cassandra, Redis Cluster)
+```
 
 ---
 

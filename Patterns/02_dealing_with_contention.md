@@ -173,6 +173,119 @@ flowchart LR
 
 ---
 
+## 3. Concurrency Strategy Matrix
+
+| Strategy | Safe Scale Limit | Latency | Implementation Complexity | Best Used For |
+|---|---|---|---|---|
+| **Pessimistic Locking** | Low (< 500 req/sec) | High | Trivial | Banking, internal ledgers, inventory with low concurrency. |
+| **Optimistic (OCC)** | Medium (< 2k req/sec) | Low (No locks) | Medium | Wiki pages, profile edits, low-concurrency catalog items. |
+| **In-Memory Atomic** | Very High (100k+ req/sec) | Sub-ms | High | Flash sales, distributed counters, rate limiters, cart reservation. |
+| **Queue Serialization** | Infinite (Buffered) | Medium (Asynchronous) | High | Concert ticket seat allocations (Ticketmaster), ad impression counters. |
+| **Idempotency Key** | High | Low | Low | All mutation APIs — prevents duplicate request execution. |
+| **Saga Pattern** | High | High (eventual) | High | Multi-service transactions. |
+| **CRDT** | Very High | Very Low | High | Collaborative editing, offline-first, shared counters. |
+
+---
+
+## 3.5 Idempotency Keys (Duplicate Request Prevention)
+
+A distinct class of contention: the client retries a request (network timeout), and you don't want it executed twice.
+
+```
+Client: POST /payments → timeout (request may have succeeded or failed)
+Client: POST /payments → retry with same Idempotency-Key
+
+Server:
+  Check: have I seen this idempotency key before?
+    YES → return cached response (no re-execution)
+    NO  → execute, store (key, response) with 24h TTL, return response
+```
+
+```python
+def create_payment(request, idempotency_key: str):
+    # Check cache first (Redis or DB)
+    cached = redis.get(f"idem:{idempotency_key}")
+    if cached:
+        return json.loads(cached)  # return previous response, don't re-execute
+    
+    result = execute_payment(request)
+    
+    # Store for 24 hours
+    redis.setex(f"idem:{idempotency_key}", 86400, json.dumps(result))
+    return result
+```
+
+**Implementation rules:**
+- Key should be client-generated (UUID v4), sent in a header (`Idempotency-Key: <uuid>`)
+- Store with 24h TTL — long enough to cover all client retry windows
+- Include `status` field: `PENDING` → `COMPLETED`. Reject duplicate requests that arrive while status is `PENDING` to prevent races
+- Scope to `(user_id, idempotency_key)` — never allow cross-user key reuse
+- Document as part of the API contract; clients **must** generate a new key per logically new request
+
+---
+
+## 3.6 CRDT (Conflict-Free Replicated Data Types)
+
+For collaborative applications (Google Docs, Figma), use data types that are designed to merge concurrent edits without conflict — no locks, no coordinator.
+
+```
+Two users edit a counter simultaneously:
+  User A: increment(counter) → expects 11
+  User B: increment(counter) → expects 11
+  
+  Last-write-wins: result is 11 (one increment lost!)
+  CRDT G-Counter: each node tracks its own increment count
+                  total = sum across all nodes = 12 ✓
+```
+
+**Common CRDTs:**
+
+| CRDT | Description | Example Use |
+|------|-------------|-------------|
+| **G-Counter** | Increment-only counter; sum across replicas = total | View counts, likes |
+| **PN-Counter** | Increment and decrement; separate G-Counters for + and - | Inventory (with approx. reads) |
+| **LWW-Element-Set** | Last-Write-Wins register — simple but lossy | Simple key-value sync |
+| **OR-Set** | Observed-Remove Set — handles concurrent add and remove correctly | Shopping cart, tag sets |
+| **RGA / CRDT text** | Real-time collaborative text editing | Used by Liveblocks, Yjs, Automerge |
+
+**Use when:** Collaborative editing, shared state that must converge, offline-first applications.
+
+> **Key insight:** CRDTs avoid coordination entirely — each replica applies operations locally and merges deterministically. The trade-off is eventual consistency and limited expressiveness (not all operations can be modeled as CRDTs).
+
+---
+
+## 3.7 Partitioning as Contention Avoidance
+
+The best contention strategy is often eliminating it. If you partition the contested resource, no two operations fight for the same thing.
+
+```
+Problem: 100K users trying to claim one of 10K concert tickets simultaneously
+         → Massive contention on ticket rows
+
+Solution: Pre-assign ticket ID ranges to geographic regions:
+  Region US-East: tickets 1–3,000
+  Region US-West: tickets 3,001–6,000
+  Region EU:      tickets 6,001–10,000
+
+Users in US-East only contend with each other; US-West doesn't slow them down.
+```
+
+**Counter sharding** (for analytics — eliminates hot-row contention):
+```sql
+-- Instead of one row: total_views = 1,000,000
+-- Use N shard rows: views_shard_0 = 100K, views_shard_1 = 100K, ...
+-- Increment a random shard; sum shards for total.
+UPDATE view_shards 
+   SET count = count + 1 
+ WHERE item_id = 123 AND shard_id = floor(random() * 10);
+
+SELECT SUM(count) FROM view_shards WHERE item_id = 123; -- read total
+```
+
+This is how Redis counters are sharded at scale (see Q1 in the deep dives above).
+
+---
+
 ## 4. Advanced Interview Deep Dives
 
 ### Q1: How do you handle "Hot Keys" in distributed caches under extreme load?

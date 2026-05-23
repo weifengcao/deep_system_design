@@ -164,6 +164,38 @@ sequenceDiagram
 
 ---
 
+## 3.5 Decision Framework
+
+Use this decision tree to select the right protocol for your use case:
+
+```
+Do you need client → server communication (not just server → client)?
+    YES → WebSocket (or HTTP for each client action)
+    NO  → SSE or polling
+
+How frequently do updates arrive?
+    Rarely (< 1/min)      → Short polling (simplest)
+    Occasionally (every few seconds) → Long polling
+    Frequently (sub-second) → SSE or WebSocket
+
+Can you afford stateful connections on your servers?
+    YES → WebSocket or SSE
+    NO  → Polling (stateless)
+
+Is this video/audio?
+    YES → WebRTC
+
+Default recommendation by use case:
+  Chat / collaboration       → WebSocket
+  Notifications / feed       → SSE
+  Live scores / dashboards   → SSE
+  Order status updates       → Long polling (simple) or SSE
+  AI token streaming         → SSE
+  Video calls                → WebRTC
+```
+
+---
+
 ## 4. Server-Side Push Routing & Scale (The Complex Part)
 
 If you select a stateful protocol (WebSockets or SSE), you cannot scale horizontally by simply adding stateless server instances. If **Client A** is connected to **Server 1**, and **Server 2** receives the message intended for **Client A**, how does the message get routed to the correct server?
@@ -225,6 +257,20 @@ When a stateful WebSocket/SSE server restarts or crashes, millions of clients wi
 *   **The Solution:**
     1.  **Exponential Backoff with Jitter:** Clients must delay reconnection attempts using an exponentially increasing delay, modified by a random value (jitter) to distribute the load over time:
         $$T_{\text{wait}} = 2^{\text{attempt}} \times \text{Base Delay} + \text{Random Jitter}$$
+
+        ```javascript
+        // Always implement exponential backoff with jitter on reconnection
+        function reconnect(attempt = 0) {
+          const delay = Math.min(1000 * 2 ** attempt + Math.random() * 1000, 30000);
+          setTimeout(() => {
+            ws = createWebSocket();
+            ws.onclose = () => reconnect(attempt + 1);
+            ws.onopen  = () => { attempt = 0; }; // reset on success
+          }, delay);
+        }
+        ```
+
+        Without this, a server restart causes all clients to reconnect simultaneously — a thundering herd that kills the server.
     2.  **L4 Load Balancer Connection Throttling:** Place rate limiters at the TCP layer to reject bursty connection attempts gracefully.
     3.  **State Recovery Buffers:** Use client-side event sequences (e.g., `last_event_id`) and keep a short-term message log in Redis so clients can fetch missed updates immediately after reconnecting.
 
@@ -240,6 +286,49 @@ In a distributed real-time chat application, packets may take different network 
 *   **The Solution:**
     1.  **Distributed Sequencer:** Generate unique, monotonically increasing message IDs using a centralized system like **Snowflake IDs** or a Redis atomic counter per channel.
     2.  **Client-Side Buffering:** Have clients buffer incoming messages and sort them by their sequence ID or logical clock (e.g., Lamport Timestamps) rather than the physical time the packet was received.
+
+---
+
+## 5.5 AI Token Streaming
+
+LLMs generate tokens sequentially. Streaming them to the client as they're produced dramatically improves perceived responsiveness — users see output immediately rather than waiting 5–30s for the full response.
+
+**SSE is the standard pattern:**
+
+```python
+# FastAPI streaming endpoint
+@app.post("/chat")
+async def chat(request: ChatRequest, user: User = Depends(get_user)):
+    async def generate():
+        async for chunk in llm.stream(request.messages):
+            token = chunk.choices[0].delta.content or ""
+            yield f"data: {json.dumps({'token': token})}\n\n"
+        yield "data: [DONE]\n\n"
+    return StreamingResponse(generate(), media_type="text/event-stream")
+```
+
+```javascript
+// Client — stream tokens as they arrive
+const response = await fetch('/chat', { method: 'POST', body: JSON.stringify(msg) });
+const reader = response.body.getReader();
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  appendToken(new TextDecoder().decode(value));
+}
+```
+
+**For multi-step agent workflows**, stream intermediate steps too — not just final tokens:
+```
+data: {"type": "thinking",    "content": "Searching for information..."}
+data: {"type": "tool_call",   "tool": "web_search", "query": "Redis docs"}
+data: {"type": "tool_result", "content": "...search results..."}
+data: {"type": "token",       "content": "Based"}
+data: {"type": "token",       "content": " on"}
+data: [DONE]
+```
+
+This keeps users engaged during long-running agent tasks and provides transparency into the agent's actions.
 
 ---
 

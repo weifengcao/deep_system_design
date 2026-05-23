@@ -161,6 +161,174 @@ sequenceDiagram
 
 ---
 
+### D. Job Queue Architecture
+
+For operations too slow for an synchronous HTTP request (video encoding, ML inference, report generation, bulk email):
+
+```
+HTTP Request:
+  POST /videos/upload
+  → Validate, store to S3, create job record
+  → Return immediately: {job_id: "abc123", status: "queued"}
+
+Client polls or subscribes:
+  GET /jobs/abc123 → {status: "processing", progress: 45}
+  GET /jobs/abc123 → {status: "complete", result_url: "..."}
+```
+
+```sql
+CREATE TABLE jobs (
+    id           UUID PRIMARY KEY,
+    type         TEXT NOT NULL,      -- 'video_transcode', 'report_generate'
+    status       TEXT NOT NULL,      -- queued|processing|complete|failed
+    payload      JSONB NOT NULL,     -- input parameters
+    result       JSONB,              -- output when complete
+    created_at   TIMESTAMPTZ DEFAULT now(),
+    started_at   TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    attempts     INT DEFAULT 0,
+    error        TEXT
+);
+```
+
+Workers must be **idempotent** — message queues deliver at-least-once:
+```python
+def transcode_video(job_id, video_url):
+    job = db.get_job(job_id)
+    if job.status == 'complete':
+        return job.result  # already done
+    
+    updated = db.execute("""
+        UPDATE jobs SET status='processing', started_at=now(), attempts=attempts+1
+        WHERE id=%s AND status='queued'
+    """, job_id)
+    if updated.rowcount == 0:
+        return  # another worker already claimed it
+    
+    try:
+        result = ffmpeg.transcode(video_url)
+        db.execute("UPDATE jobs SET status='complete', result=%s WHERE id=%s", result, job_id)
+    except Exception as e:
+        db.execute("UPDATE jobs SET status='failed', error=%s WHERE id=%s", str(e), job_id)
+        raise  # re-queue for retry
+```
+
+Messages that fail repeatedly get routed to a **Dead Letter Queue (DLQ)** for inspection:
+```
+Worker fails 3 times on message → message moves to DLQ topic
+  → Ops team can inspect, fix, and replay
+  → Prevents poison pill messages from blocking the queue
+```
+
+---
+
+### E. Cron Jobs and Scheduled Tasks
+
+For recurring processing: generating reports, sending digest emails, cleaning up expired data.
+
+**Requirements:**
+- **Exactly-once execution** per schedule tick (two instances shouldn't both run the same job)
+- **Visibility** into last run, duration, errors
+- **Missed run detection** (if a job was missed during downtime, catch up or skip?)
+
+**Simple: Database-Backed Scheduler**
+
+```sql
+CREATE TABLE scheduled_jobs (
+    id          UUID PRIMARY KEY,
+    name        TEXT UNIQUE,
+    cron_expr   TEXT NOT NULL,           -- "0 0 * * *" = midnight daily
+    last_run    TIMESTAMPTZ,
+    next_run    TIMESTAMPTZ NOT NULL,
+    locked_by   TEXT,                    -- worker ID holding the lock
+    locked_at   TIMESTAMPTZ
+);
+
+-- Worker claims a job atomically
+UPDATE scheduled_jobs
+SET locked_by = 'worker-1', locked_at = now()
+WHERE name = 'daily_report'
+  AND next_run <= now()
+  AND (locked_by IS NULL OR locked_at < now() - INTERVAL '10 minutes')
+RETURNING *;
+-- 0 rows → another worker got it; skip
+-- 1 row  → run the job
+```
+
+**Production: Dedicated Schedulers**
+- **Celery Beat** (Python, backed by Redis or RabbitMQ)
+- **Temporal Schedules** (durable, exactly-once, survives restarts)
+- **AWS EventBridge Scheduler** (managed, serverless)
+- **Kubernetes CronJob** (for containerized tasks)
+
+---
+
+### F. AI Agent Pipeline Architecture
+
+Multi-step AI agent workflows have unique characteristics: LLM calls are expensive and slow (1–30s each), tool results may be cached, and the pipeline must handle partial failure gracefully.
+
+**Pipeline structure:**
+```
+Input → [Understand intent (LLM, 2s)] → [Plan (LLM, 3s)] → [Execute tools (1-10s each)] → [Synthesize (LLM, 5s)] → Output
+```
+
+**Durable agent execution — checkpoint pattern:**
+
+```python
+class AgentRun:
+    def __init__(self, run_id: str):
+        self.run_id = run_id
+    
+    def get_or_compute(self, step: str, fn: callable):
+        """Return cached step result if exists, otherwise compute and cache."""
+        cached = db.get_step_result(self.run_id, step)
+        if cached:
+            return cached
+        result = fn()
+        db.save_step_result(self.run_id, step, result)
+        return result
+
+def run_agent(run_id, user_query):
+    agent = AgentRun(run_id)
+    
+    # Each step checkpointed — restart resumes from last checkpoint
+    intent = agent.get_or_compute("understand_intent",
+        lambda: llm.call(f"Understand: {user_query}"))
+    
+    plan = agent.get_or_compute("plan",
+        lambda: llm.call(f"Plan steps for: {intent}"))
+    
+    tool_results = []
+    for i, step in enumerate(plan.steps):
+        result = agent.get_or_compute(f"tool_{i}",
+            lambda: execute_tool(step))
+        tool_results.append(result)
+    
+    return agent.get_or_compute("synthesize",
+        lambda: llm.call(f"Synthesize: {tool_results}"))
+```
+
+**Human-in-the-loop** for high-stakes agent actions (sending emails, making purchases, modifying files):
+
+```python
+async def agent_step_requiring_approval(action, payload, run_id):
+    # Pause the workflow, request approval
+    approval_id = db.create_approval_request(run_id, action, payload)
+    notification.send(admin, f"Agent wants to {action}: {payload}")
+    
+    # Wait for human approval (Temporal signal or polling)
+    approval = await wait_for_signal(f"approval:{approval_id}", timeout=3600)
+    
+    if approval.approved:
+        return execute_action(action, payload)
+    else:
+        raise ActionRejected(approval.reason)
+```
+
+See [Pattern 01: Real-Time Updates](./01_realtime_updates.md) for streaming intermediate agent steps (tool calls, thinking) to the client over SSE.
+
+---
+
 ## 3. Idempotency & Retries (The Critical Guardrails)
 
 Every multi-step architecture requires two strict policies to prevent duplicate actions under network retries.
@@ -275,3 +443,68 @@ Wrap each downstream service call within a **circuit breaker** (e.g., using [Res
 > *   For real-time monitoring of saga state changes, see [Pattern 01: Real-Time Updates](./01_realtime_updates.md) — use WebSockets/SSE to push saga status to client dashboards.
 > *   For handling write contention when multiple sagas compete for the same resource, see [Pattern 02: Dealing with Contention](./02_dealing_with_contention.md).
 > *   For long-running sagas (e.g., multi-day approval workflows), see [Pattern 07: Long-Running Tasks](./07_long_running_tasks.md).
+> *   For AI agent pipeline patterns, see [Pattern 10: Agent Infrastructure](./10_agent_infrastructure.md).
+
+---
+
+## 8. Failure Recovery Patterns
+
+### Retry with Exponential Backoff
+
+```python
+def retry_with_backoff(fn, max_attempts=5, base_delay=1.0):
+    for attempt in range(max_attempts):
+        try:
+            return fn()
+        except TransientError as e:
+            if attempt == max_attempts - 1:
+                raise
+            delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+            time.sleep(delay)
+```
+
+### Circuit Breaker
+
+Stop hammering a failing downstream service — fail fast and trigger compensations immediately:
+
+```python
+class CircuitBreaker:
+    def __init__(self, failure_threshold=5, recovery_timeout=60):
+        self.failures = 0
+        self.state = "closed"  # closed=normal, open=failing, half_open=testing
+        self.last_failure = None
+    
+    def call(self, fn):
+        if self.state == "open":
+            if time.time() - self.last_failure > self.recovery_timeout:
+                self.state = "half_open"
+            else:
+                raise CircuitOpen("Service unavailable")
+        try:
+            result = fn()
+            if self.state == "half_open":
+                self.state = "closed"
+                self.failures = 0
+            return result
+        except Exception:
+            self.failures += 1
+            self.last_failure = time.time()
+            if self.failures >= self.failure_threshold:
+                self.state = "open"
+            raise
+```
+
+Wrap each downstream service call within a circuit breaker (e.g., [Resilience4j](https://resilience4j.readme.io/)). If a downstream service begins failing consistently, the circuit breaker trips to `OPEN` and the saga immediately triggers compensations rather than waiting for timeouts.
+
+### Quick Reference
+
+| Problem | Pattern |
+|---------|---------|
+| Atomic write + event publish | Transactional outbox |
+| Long-running async task | Job queue + polling |
+| Multi-service transaction | Saga (choreography or orchestration) |
+| Complex workflow with branching | Temporal / Step Functions |
+| Repeated task scheduling | Cron + distributed lock |
+| Failing downstream service | Circuit breaker |
+| Duplicate message processing | Idempotency key / status check |
+| AI agent crash recovery | Checkpoint pattern / Temporal |

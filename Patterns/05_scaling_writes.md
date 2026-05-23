@@ -4,6 +4,12 @@ The **Scaling Writes** pattern is applied when a system experiences high write t
 
 Unlike read workloads, writes cannot be easily resolved with standard caching (since every write must persist safely). Heavy write traffic saturates database disk I/O, consumes database transaction threads, and degrades indexing performance.
 
+**Signs of write saturation:**
+- Primary DB CPU > 70% from writes alone
+- Replication lag growing (replicas can't keep up)
+- Write p99 latency climbing under load
+- Lock contention on hot rows
+
 ---
 
 ## 1. The Scaling Hierarchy for Writes
@@ -38,6 +44,70 @@ sequenceDiagram
 *   **Trade-offs:**
     *   **Pros:** Absorbs sudden write spikes seamlessly; converts bursty write traffic into a flat, predictable database load; decouples API latency from database disk speeds.
     *   **Cons:** Breaks synchronous feedback loops (e.g., client does not know immediately if the database write succeeded); eventual consistency model.
+
+**Kafka as a write buffer — the preferred pattern at scale:**
+```
+Application → Kafka (< 1ms, durable)
+               → Consumer → DB (batch insert, 10K rows/commit)
+```
+High-throughput writes go to Kafka first (durable, fast append). A Kafka consumer writes to the database in batches at database-optimal throughput. Kafka absorbs burst traffic and smooths it into a flat load profile.
+
+---
+
+### A.5 Async Write Offloading
+
+Not every write needs to be synchronous. Identify which operations the user is waiting for vs which can happen in the background:
+
+```
+Synchronous (user waits):
+  ✓ Creating a post (user needs confirmation)
+  ✓ Placing an order (user needs order ID)
+  ✓ Updating account settings
+
+Async (fire-and-forget via Kafka/SQS):
+  → Updating view count
+  → Updating follower counts
+  → Generating thumbnails
+  → Sending emails
+  → Updating recommendation model
+  → Audit logging
+```
+
+```python
+def create_post(user_id, content):
+    # Synchronous: user waits for this
+    post = db.insert("posts", {user_id: user_id, content: content})
+    
+    # Async: offload to queue, return immediately
+    kafka.publish("post.created", {post_id: post.id, user_id: user_id})
+    
+    return post  # return without waiting for fan-out, notifications, etc.
+```
+
+This dramatically reduces the synchronous write load on your primary DB.
+
+---
+
+### A.6 Backpressure
+
+When write load exceeds capacity, don't crash — apply backpressure to the caller.
+
+```python
+# Simple: rate-limit writes per user
+def write_event(user_id, event):
+    if redis.incr(f"write_rate:{user_id}") > MAX_WRITES_PER_SECOND:
+        raise TooManyRequests()
+    db.insert("events", event)
+
+# Sophisticated: queue depth monitoring
+def write_to_queue(event):
+    queue_depth = kafka.get_lag("events-topic")
+    if queue_depth > MAX_QUEUE_DEPTH:
+        raise ServiceUnavailable("System overloaded, please retry later")
+    kafka.publish("events", event)
+```
+
+**Return HTTP 429 (Too Many Requests) or 503 (Service Unavailable)** with a `Retry-After` header rather than accepting writes you can't handle.
 
 ---
 
@@ -142,6 +212,28 @@ sequenceDiagram
     *   **PostgreSQL** defaults to `fsync = on` (per commit). Setting `synchronous_commit = off` enables batch mode.
     *   **RocksDB** offers `WriteOptions::sync` per write and `WAL_ttl_seconds` for WAL lifecycle management.
     *   **Key insight:** In interviews, always mention the WAL when discussing crash recovery. It is the answer to "how do you ensure writes survive a server crash?"
+
+---
+
+## 2.5 Write Scaling Decision Tree
+
+```
+Single Postgres handles your writes?
+  → YES: Start here. Optimize queries, add indexes.
+
+Writes > 20K/sec or < 5K/sec with high latency?
+  → Buffer + batch via Kafka
+  → Async offload non-critical writes (view counts, emails, audit logs)
+
+Still hitting limits?
+  → Switch to LSM-Tree DB (Cassandra/ScyllaDB) for write-heavy data
+  → Shard by natural partition key
+
+Multi-region writes needed?
+  → Cassandra multi-DC with LOCAL_QUORUM
+  → DynamoDB Global Tables
+  → Postgres with conflict-free last-write-wins (riskier)
+```
 
 ---
 
