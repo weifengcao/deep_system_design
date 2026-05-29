@@ -576,4 +576,4 @@ In a system design interview, weave security in at the right moments — don't d
 ---
 
 *Previous: [09 - Numbers to Know](./09-numbers-to-know.md)*  
-*Next: Key Technologies section*
+*Next: [01 - Redis](../Key_Technologies/01-redis.md)*

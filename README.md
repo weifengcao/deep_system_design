@@ -112,8 +112,24 @@ Go directly to a pattern's deep dive using the quick links below:
 | **05** | **[Scaling Writes](./Patterns/05_scaling_writes.md)** | Absorbing intense, bursty write streams | IoT sensor telemetry, web clickstreams, chat log logging |
 | **06** | **[Large Blobs](./Patterns/06_large_blobs.md)** | Managing, storing, & streaming massive binary files | Video playback (Netflix HLS/DASH), direct pre-signed S3 uploads |
 | **07** | **[Long-Running Tasks](./Patterns/07_long_running_tasks.md)** | Offloading heavy synchronous work from API gateway threads | Video transcoding, PDF compile queues, massive bulk email pipelines |
+| **08** | **[Agent Fundamentals](./Patterns/08_agent_fundamentals.md)** | Designing stateful, autonomous, and tool-using LLM workflows | Codebase editors (Cursor), autonomous research assistants, customer workflows |
+| **09** | **[RAG Systems](./Patterns/09_rag_systems.md)** | Dynamic ingestion, retrieval, and prompt context assembly for private data | Semantic search engines, corporate Q&A bots, personalized AI assistants |
+| **10** | **[Agent Infrastructure](./Patterns/10_agent_infrastructure.md)** | Multi-tenant isolation, sandboxed tool execution, cost/quota management | Cloud-based developer agent runtimes, LLM gateways, autonomous operations |
 
-Learn how to compositionally apply these patterns in the **[Patterns Master Index](./Patterns/README.md)**.
+Learn how to compositionally apply these patterns in the **[Patterns Master Index](./Patterns/00_delivery_framework.md)**.
+
+---
+
+## 🧩 Pillar 4: Practice Problems (Real-World Scenarios)
+
+Put these principles into action. These end-to-end, production-grade practice problems demonstrate how to synthesize core concepts, tools, and design patterns to solve high-scale engineering challenges under realistic constraints.
+
+| # | Practice Problem | Core Architectural Focus | Key Design Patterns & Technologies Used |
+|---|---|---|---|
+| **01** | **[Distributed Rate Limiter](./Problems/Rate_limiter.md)** | Extreme write scaling, hybrid caching, sliding window metrics | [Tech: Redis](./Key_Technologies/01-redis.md), [Pattern: Scaling Writes](./Patterns/05_scaling_writes.md) |
+| **02** | **[Online Code Judge](./Problems/Code_Judgement.md)** | Safe untrusted code execution, real-time feedback, isolation | [Pattern: Long-Running Tasks](./Patterns/07_long_running_tasks.md), [Pattern: Real-Time Updates](./Patterns/01_realtime_updates.md) |
+| **03** | **[AI Coding Agent](./Problems/AI_Coding_Agent.md)** | LLM context construction, tool allowlisting, high-throughput completions | [Tech: Vector Databases](./Key_Technologies/12-vector-databases.md), [Pattern: Long-Running Tasks](./Patterns/07_long_running_tasks.md) |
+| **04** | **[Restaurant Search & Monitoring](./Problems/Restaurant_Search_Monitoring.md)** | Low-latency geospatial query, high-throughput metrics ingestion | [Tech: Elasticsearch](./Key_Technologies/02-elasticsearch.md), [Tech: Time Series Databases](./Key_Technologies/10-time-series-databases.md) |
 
 ---
 

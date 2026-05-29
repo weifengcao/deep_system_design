@@ -395,4 +395,5 @@ Powers of 10
 ---
 
 *Previous: [08 - Database Indexing](./08-db-indexing.md)*  
-*Next: Series complete — see [Key Technologies](../key-technologies/README.md)*
+*Next: [10 - Security Fundamentals](./10-security-fundamentals.md)*
+

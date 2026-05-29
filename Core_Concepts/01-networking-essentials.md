@@ -376,4 +376,5 @@ User (India) ─────▶ CDN Edge (Mumbai) ─── cache hit ──▶ 
 
 ---
 
+*Previous: [00 - System Design Playbook](./00-system-design-playbook.md)*  
 *Next: [02 - API Design](./02-api-design.md)*

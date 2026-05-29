@@ -4,6 +4,9 @@ In a Staff+ system design interview, your technical expertise is evaluated along
 
 This playbook provides a battle-tested, time-framed framework designed to maximize your signal across all interview evaluation axes: **Requirements, Capacity Planning, High-Level Design, Technical Trade-Offs, and Resilience**.
 
+> [!TIP]
+> **Delivery Framework & Composition:** For a highly polished version of the system design interview roadmap, structural techniques, and how to compose architectural patterns end-to-end under pressure, see **[Pattern 00: System Design Delivery Framework](../Patterns/00_delivery_framework.md)**.
+
 ---
 
 ## ⏱️ The 45-Minute Timeline Structure
@@ -216,3 +219,7 @@ Use this mental checklist during the first 10 minutes of every system design int
 *   [ ] **Calculate constraints early**: Write QPS, Read QPS, Storage per Year, Bandwidth.
 *   [ ] **Proactive Security**: Auth at gateway, mTLS internally, KMS envelope encryption, rate limiting.
 *   [ ] **Proactive Resiliency**: Retries with backoff + jitter, circuit breakers, outbox patterns, dead-letter queues.
+
+---
+
+*Next: [01 - Networking Essentials](./01-networking-essentials.md)*
