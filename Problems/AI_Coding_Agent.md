@@ -448,7 +448,7 @@ flowchart TB
     subgraph Indexing["Indexing Service"]
         Ingest[Ingestion Queue<br/>File change events]
         Chunk[AST-Aware<br/>Chunker]
-        Embed[Embedding<br/>Model (Batch)]
+        Embed["Embedding<br/>Model (Batch)"]
         Write[Vector DB<br/>Writer]
     end
 
